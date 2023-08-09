@@ -28,6 +28,12 @@ static int memblk_num = 2;
 module_param(memblk_num, int, S_IRUGO);
 MODULE_PARM_DESC(memblk_num, " number of memblk to create");
 
+//use_blk_mq
+static int use_blk_mq = 1;
+module_param(use_blk_mq, int, S_IRUGO);
+MODULE_PARM_DESC(use_blk_mq, " use blk_mq(default=1)");
+
+
 int zblk_minor = 0;
 LIST_HEAD(zblk_list);
 
@@ -134,45 +140,111 @@ err:
     return -1;
 }
 
+static int zblk_queue_rq(struct blk_mq_hw_ctx *hctx,
+		const struct blk_mq_queue_data *bd)
+{
+	return -ENOTSUPP;
+}
+
+static struct blk_mq_ops zblk_mq_ops = {
+	.queue_rq       = zblk_queue_rq
+};
+
+int zblk_init_tag_set(struct zblk *zblk, struct blk_mq_tag_set *set)
+{
+	set->ops = &zblk_mq_ops;
+	set->nr_hw_queues = num_online_cpus();
+	set->numa_node = NUMA_NO_NODE;
+	set->queue_depth = BLKDEV_MAX_RQ;
+
+	set->cmd_size = 0;
+	set->flags = BLK_MQ_F_SHOULD_MERGE | 0 | BLK_MQ_F_BLOCKING;
+
+	set->driver_data = zblk;
+
+	return blk_mq_alloc_tag_set(set);
+}
+
 int zblk_init_dev(struct zblk *curr_zblk) {
     int ret = 0;
     struct gendisk *disk;
     struct request_queue *q;
 
-    // init queue
-    q = blk_alloc_queue(GFP_KERNEL);
-    if (!q)
-        goto err;
-    blk_queue_logical_block_size(q, bs);
-    blk_queue_physical_block_size(q, bs);
+    if(use_blk_mq) {
+        // init queue
+        if(zblk_init_tag_set(curr_zblk, &curr_zblk->tag_set))
+            goto err;
 
-    q->queuedata = curr_zblk;
-    if(curr_zblk->type == ZBLK_TYPE_MEMBLK)
-        blk_queue_make_request(q, memblk_make_request);
-    else if(curr_zblk->type == ZBLK_TYPE_LINEAR)
-        blk_queue_make_request(q, linear_make_request);
-    else {
-        printk("ZBLK: invalid zblk_type:%d\n", curr_zblk->type);
-        goto err_cleanup_queue;
+		q = blk_mq_init_queue(&curr_zblk->tag_set);
+        if (IS_ERR(q))
+            goto err;
+        blk_queue_logical_block_size(q, bs);
+        blk_queue_physical_block_size(q, bs);
+
+        q->queuedata = curr_zblk;
+        if(curr_zblk->type == ZBLK_TYPE_MEMBLK)
+            blk_queue_make_request(q, memblk_make_request);
+        else if(curr_zblk->type == ZBLK_TYPE_LINEAR)
+            blk_queue_make_request(q, linear_make_request);
+        else {
+            printk("ZBLK: invalid zblk_type:%d\n", curr_zblk->type);
+            goto err_cleanup_queue;
+        }
+        curr_zblk->q = q;
+
+        // init disk
+        disk = alloc_disk(1);
+        if (!disk) {
+            printk("ZBLK: alloc_disk failed\n");
+            goto err_cleanup_queue;
+        }
+        sprintf(disk->disk_name, "zblk%d", curr_zblk->minor);
+
+        set_capacity(disk, curr_zblk->size);
+        disk->major = major;
+        disk->first_minor = curr_zblk->minor;
+        disk->fops = &zblk_fops;
+        disk->queue = curr_zblk->q;
+        disk->private_data = curr_zblk;
+        curr_zblk->disk = disk;
+        add_disk(disk);
+
+    } else {
+        // init queue
+        q = blk_alloc_queue(GFP_KERNEL);
+        if (!q)
+            goto err;
+        blk_queue_logical_block_size(q, bs);
+        blk_queue_physical_block_size(q, bs);
+
+        q->queuedata = curr_zblk;
+        if(curr_zblk->type == ZBLK_TYPE_MEMBLK)
+            blk_queue_make_request(q, memblk_make_request);
+        else if(curr_zblk->type == ZBLK_TYPE_LINEAR)
+            blk_queue_make_request(q, linear_make_request);
+        else {
+            printk("ZBLK: invalid zblk_type:%d\n", curr_zblk->type);
+            goto err_cleanup_queue;
+        }
+        curr_zblk->q = q;
+
+        // init disk
+        disk = alloc_disk(1);
+        if (!disk) {
+            printk("ZBLK: alloc_disk failed\n");
+            goto err_cleanup_queue;
+        }
+        sprintf(disk->disk_name, "zblk%d", curr_zblk->minor);
+
+        set_capacity(disk, curr_zblk->size);
+        disk->major = major;
+        disk->first_minor = curr_zblk->minor;
+        disk->fops = &zblk_fops;
+        disk->queue = curr_zblk->q;
+        disk->private_data = curr_zblk;
+        add_disk(disk);
+        curr_zblk->disk = disk;
     }
-    curr_zblk->q = q;
-
-    // init disk
-    disk = alloc_disk(1);
-    if (!disk) {
-        printk("ZBLK: alloc_disk failed\n");
-        goto err_cleanup_queue;
-    }
-    sprintf(disk->disk_name, "zblk%d", curr_zblk->minor);
-
-    set_capacity(disk, curr_zblk->size);
-    disk->major = major;
-    disk->first_minor = curr_zblk->minor;
-    disk->fops = &zblk_fops;
-    disk->queue = curr_zblk->q;
-    disk->private_data = curr_zblk;
-    add_disk(disk);
-    curr_zblk->disk = disk;
 
     return ret;
 err_cleanup_queue:

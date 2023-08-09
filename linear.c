@@ -85,7 +85,7 @@ struct linear_request *linear_new_request(struct zblk *blk, struct bio *bio) {
     req->bio_private->bi_end_io = linear_end_io;
 
     req->start_jif = jiffies;
-    generic_start_io_acct(bio_data_dir(bio), bio->bi_size >> 9, &blk->disk->part0);
+    generic_start_io_acct(bio->bi_bdev->bd_disk->queue, bio_data_dir(bio), bio->bi_size >> 9, &blk->disk->part0);
     return req;
 err_free_req:
     kfree(req);
@@ -96,8 +96,8 @@ err:
 
 void linear_end_io(struct bio *bio, int error) {
     struct linear_request *req = (struct linear_request *)bio->bi_private;
-
-    generic_end_io_acct(bio_data_dir(req->bio_original), &req->blk->disk->part0, req->start_jif);
+    
+    generic_end_io_acct(bio->bi_bdev->bd_disk->queue, bio_data_dir(req->bio_original), &req->blk->disk->part0, req->start_jif);
 
     bio_put(req->bio_private);
     bio_endio(req->bio_original, error);

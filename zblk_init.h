@@ -10,9 +10,11 @@
 #include <linux/kernel.h>
 
 #include <linux/blkdev.h>
+#include <linux/blk-mq.h>
 #include <linux/fs.h>
 #include <linux/timer.h>
 #include <linux/delay.h>
+#include <linux/errno.h>
 
 #define SECTOR_SHIFT 9
 #define GBYTE_BYTE_SHIFT 30
@@ -50,6 +52,7 @@ struct zblk {
 
     struct request_queue *q;
     struct gendisk *disk;
+    struct blk_mq_tag_set tag_set;
 
     enum zblk_stat stat;
     enum zblk_type type;
